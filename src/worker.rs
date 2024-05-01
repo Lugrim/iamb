@@ -479,6 +479,50 @@ async fn refresh_rooms(client: &Client, store: &AsyncProgramStore) {
     }
 }
 
+async fn refresh_public_rooms(client: &Client, store: &AsyncProgramStore) {
+    let mut names = vec![];
+
+    let mut rooms = vec![];
+
+    // TODO Check there isn't some kind of zip that could be used here?
+    // TODO Actual Pagination
+    // TODO Allow checking other servers
+    // TODO Error Management
+    match client.public_rooms(Some(100), None, None).await {
+        Ok(resp) => {
+            tracing::debug!("EXHIB ROOMS? OwO {resp:?}");
+            for room in resp.chunk.into_iter() {
+                let name = room.name.clone().unwrap_or_default();
+                // let tags = room.tags().await.unwrap_or_default();
+
+                names.push((room.room_id.to_owned(), name));
+
+                rooms.push(room);
+                // rooms.push(Arc::new((room, tags)));
+            }
+        },
+        Err(e) => {
+            tracing::error!("Could not fetch public rooms: {e:?}");
+        }
+    }
+
+    let mut locked = store.lock().await;
+    locked.application.sync_info.public_rooms = rooms;
+
+    for (room_id, name) in names {
+        locked.application.set_room_name(&room_id, &name);
+    }
+}
+
+// async fn refresh_public_rooms_forever(client: &Client, store: &AsyncProgramStore) {
+//     let mut interval = tokio::time::interval(Duration::from_secs(30));
+//
+//     loop {
+//         refresh_public_rooms(client, store).await;
+//         interval.tick().await;
+//     }
+// }
+
 async fn refresh_rooms_forever(client: &Client, store: &AsyncProgramStore) {
     let mut interval = tokio::time::interval(Duration::from_secs(5));
 
@@ -555,6 +599,10 @@ pub async fn do_first_sync(client: &Client, store: &AsyncProgramStore) -> Result
 
     // Populate sync_info with our initial set of rooms/dms/spaces.
     refresh_rooms(client, store).await;
+
+    // Populate sync_info with our initial set of public rooms.
+    // TODO Don't do it here, only upon request
+    refresh_public_rooms(client, store).await;
 
     // Insert Need::Messages to fetch accurate recent timestamps in the background.
     let mut locked = store.lock().await;
@@ -1224,6 +1272,7 @@ impl ClientWorker {
                 let load = load_older_forever(&client, &store);
                 let rcpt = send_receipts_forever(&client, &store);
                 let room = refresh_rooms_forever(&client, &store);
+                // let public_room = refresh_public_rooms_forever(&client, &store);
                 let notifications = register_notifications(&client, &settings, &store);
                 let ((), (), (), ()) = tokio::join!(load, rcpt, room, notifications);
             }

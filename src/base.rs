@@ -34,6 +34,7 @@ use matrix_sdk::{
     encryption::verification::SasVerification,
     room::Room as MatrixRoom,
     ruma::{
+        directory::PublicRoomsChunk,
         events::{
             reaction::ReactionEvent,
             relation::{Replacement, Thread},
@@ -1241,6 +1242,9 @@ pub struct SyncInfo {
 
     /// DMs that the user is a member of.
     pub dms: Vec<Arc<(MatrixRoom, Option<Tags>)>>,
+
+    /// Rooms that are exposed by the user's homeserver
+    pub public_rooms: Vec<PublicRoomsChunk>,
 }
 
 bitflags::bitflags! {
@@ -1410,6 +1414,9 @@ pub enum IambId {
     /// The `:welcome` window.
     Welcome,
 
+    /// The `:publicrooms` window.
+    PublicRoomsList,
+
     /// The `:chats` window.
     ChatList,
 }
@@ -1428,6 +1435,7 @@ impl Display for IambId {
             },
             IambId::DirectList => f.write_str("iamb://dms"),
             IambId::RoomList => f.write_str("iamb://rooms"),
+            IambId::PublicRoomsList => f.write_str("iamb://publicrooms"),
             IambId::SpaceList => f.write_str("iamb://spaces"),
             IambId::VerifyList => f.write_str("iamb://verify"),
             IambId::Welcome => f.write_str("iamb://welcome"),
@@ -1528,6 +1536,14 @@ impl<'de> Visitor<'de> for IambIdVisitor {
 
                 Ok(IambId::DirectList)
             },
+            Some("publicrooms") => {
+                // TODO Take a path
+                if url.path() != "" {
+                    return Err(E::custom("iamb://publicrooms takes no path"));
+                }
+
+                Ok(IambId::PublicRoomsList)
+            },
             Some("rooms") => {
                 if url.path() != "" {
                     return Err(E::custom("iamb://rooms takes no path"));
@@ -1612,6 +1628,9 @@ pub enum IambBufferId {
     /// The `:rooms` window.
     RoomList,
 
+    /// The `:publicrooms` window.
+    PublicRoomsList,
+
     /// The `:spaces` window.
     SpaceList,
 
@@ -1634,6 +1653,7 @@ impl IambBufferId {
             IambBufferId::DirectList => IambId::DirectList,
             IambBufferId::MemberList(room) => IambId::MemberList(room.clone()),
             IambBufferId::RoomList => IambId::RoomList,
+            IambBufferId::PublicRoomsList => IambId::PublicRoomsList,
             IambBufferId::SpaceList => IambId::SpaceList,
             IambBufferId::VerifyList => IambId::VerifyList,
             IambBufferId::Welcome => IambId::Welcome,
@@ -1668,6 +1688,7 @@ impl ApplicationInfo for IambInfo {
             IambBufferId::DirectList => vec![],
             IambBufferId::MemberList(_) => vec![],
             IambBufferId::RoomList => vec![],
+            IambBufferId::PublicRoomsList => vec![],
             IambBufferId::SpaceList => vec![],
             IambBufferId::VerifyList => vec![],
             IambBufferId::Welcome => vec![],

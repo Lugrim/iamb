@@ -15,6 +15,7 @@ use matrix_sdk::{
     encryption::verification::{format_emojis, SasVerification},
     room::{Room as MatrixRoom, RoomMember},
     ruma::{
+        directory::PublicRoomsChunk,
         events::room::member::MembershipState,
         events::tag::{TagName, Tags},
         OwnedRoomAliasId,
@@ -84,6 +85,7 @@ pub mod room;
 pub mod welcome;
 
 type MatrixRoomInfo = Arc<(MatrixRoom, Option<Tags>)>;
+type PublicRoomInfo = Arc<PublicRoomsChunk>;
 
 const MEMBER_FETCH_DEBOUNCE: Duration = Duration::from_secs(5);
 
@@ -310,6 +312,7 @@ macro_rules! delegate {
             IambWindow::DirectList($id) => $e,
             IambWindow::MemberList($id, _, _) => $e,
             IambWindow::RoomList($id) => $e,
+            IambWindow::PublicRoomsList($id) => $e,
             IambWindow::SpaceList($id) => $e,
             IambWindow::VerifyList($id) => $e,
             IambWindow::Welcome($id) => $e,
@@ -324,6 +327,7 @@ pub enum IambWindow {
     Room(RoomState),
     VerifyList(VerifyListState),
     RoomList(RoomListState),
+    PublicRoomsList(PublicRoomsListState),
     SpaceList(SpaceListState),
     Welcome(WelcomeState),
     ChatList(ChatListState),
@@ -381,6 +385,7 @@ impl IambWindow {
 pub type DirectListState = ListState<DirectItem, IambInfo>;
 pub type MemberListState = ListState<MemberItem, IambInfo>;
 pub type RoomListState = ListState<RoomItem, IambInfo>;
+pub type PublicRoomsListState = ListState<PublicRoomsItem, IambInfo>;
 pub type ChatListState = ListState<GenericChatItem, IambInfo>;
 pub type SpaceListState = ListState<SpaceItem, IambInfo>;
 pub type VerifyListState = ListState<VerifyItem, IambInfo>;
@@ -412,6 +417,12 @@ impl From<DirectListState> for IambWindow {
 impl From<RoomListState> for IambWindow {
     fn from(list: RoomListState) -> Self {
         IambWindow::RoomList(list)
+    }
+}
+
+impl From<PublicRoomsListState> for IambWindow {
+    fn from(list: PublicRoomsListState) -> Self {
+        IambWindow::PublicRoomsList(list)
     }
 }
 
@@ -527,6 +538,26 @@ impl WindowOps<IambInfo> for IambWindow {
                     .focus(focused)
                     .render(area, buf, state);
             },
+            IambWindow::PublicRoomsList(state) => {
+                let mut items = store
+                    .application
+                    .sync_info
+                    .public_rooms
+                    .clone()
+                    .into_iter()
+                    .map(|room_info| PublicRoomsItem::new(room_info, store))
+                    .collect::<Vec<_>>();
+                let fields = &store.application.settings.tunables.sort.rooms;
+                items.sort_by(|a, b| room_fields_cmp(a, b, fields));
+
+                state.set(items);
+
+                List::new(store)
+                    .empty_message("HomeServer does not expose any public room")
+                    .empty_alignment(Alignment::Center)
+                    .focus(focused)
+                    .render(area, buf, state);
+            },
             IambWindow::RoomList(state) => {
                 let mut items = store
                     .application
@@ -625,6 +656,7 @@ impl WindowOps<IambInfo> for IambWindow {
                 IambWindow::MemberList(w.dup(store), room_id.clone(), *last_fetch)
             },
             IambWindow::RoomList(w) => w.dup(store).into(),
+            IambWindow::PublicRoomsList(w) => w.dup(store).into(),
             IambWindow::SpaceList(w) => w.dup(store).into(),
             IambWindow::VerifyList(w) => w.dup(store).into(),
             IambWindow::Welcome(w) => w.dup(store).into(),
@@ -665,6 +697,7 @@ impl Window<IambInfo> for IambWindow {
             IambWindow::DirectList(_) => IambId::DirectList,
             IambWindow::MemberList(_, room_id, _) => IambId::MemberList(room_id.clone()),
             IambWindow::RoomList(_) => IambId::RoomList,
+            IambWindow::PublicRoomsList(_) => IambId::PublicRoomsList,
             IambWindow::SpaceList(_) => IambId::SpaceList,
             IambWindow::VerifyList(_) => IambId::VerifyList,
             IambWindow::Welcome(_) => IambId::Welcome,
@@ -676,6 +709,7 @@ impl Window<IambInfo> for IambWindow {
         match self {
             IambWindow::DirectList(_) => bold_spans("Direct Messages"),
             IambWindow::RoomList(_) => bold_spans("Rooms"),
+            IambWindow::PublicRoomsList(_) => bold_spans("Public Rooms"),
             IambWindow::SpaceList(_) => bold_spans("Spaces"),
             IambWindow::VerifyList(_) => bold_spans("Verifications"),
             IambWindow::Welcome(_) => bold_spans("Welcome to iamb"),
@@ -703,6 +737,7 @@ impl Window<IambInfo> for IambWindow {
         match self {
             IambWindow::DirectList(_) => bold_spans("Direct Messages"),
             IambWindow::RoomList(_) => bold_spans("Rooms"),
+            IambWindow::PublicRoomsList(_) => bold_spans("Public Rooms"),
             IambWindow::SpaceList(_) => bold_spans("Spaces"),
             IambWindow::VerifyList(_) => bold_spans("Verifications"),
             IambWindow::Welcome(_) => bold_spans("Welcome to iamb"),
@@ -745,6 +780,11 @@ impl Window<IambInfo> for IambWindow {
             },
             IambId::RoomList => {
                 let list = RoomListState::new(IambBufferId::RoomList, vec![]);
+
+                return Ok(list.into());
+            },
+            IambId::PublicRoomsList => {
+                let list = PublicRoomsListState::new(IambBufferId::PublicRoomsList, vec![]);
 
                 return Ok(list.into());
             },
@@ -903,6 +943,91 @@ impl ListItem<IambInfo> for GenericChatItem {
 }
 
 impl Promptable<ProgramContext, ProgramStore, IambInfo> for GenericChatItem {
+    fn prompt(
+        &mut self,
+        act: &PromptAction,
+        ctx: &ProgramContext,
+        _: &mut ProgramStore,
+    ) -> EditResult<Vec<(ProgramAction, ProgramContext)>, IambInfo> {
+        room_prompt(self.room_id(), act, ctx)
+    }
+}
+
+#[derive(Clone)]
+pub struct PublicRoomsItem {
+    room_info: PublicRoomInfo,
+    name: String,
+    alias: Option<OwnedRoomAliasId>,
+}
+
+impl PublicRoomsItem {
+    fn new(room_info: PublicRoomsChunk, store: &mut ProgramStore) -> Self {
+        // let room = room_info;
+        // let room_id = room_info.room_id.clone();
+
+        // let info = store.application.rooms.get_or_default(room_id.to_owned());
+        let name = room_info.name.clone().unwrap_or_default();
+        let alias = room_info.canonical_alias.clone();
+        // let unread = info.unreads(&store.application.settings);
+        //
+        if let Some(alias) = &alias {
+            store.application.names.insert(alias.to_string(), room_info.room_id.clone());
+        }
+
+        Self { room_info: std::sync::Arc::new(room_info), name, alias }
+    }
+}
+
+impl RoomLikeItem for PublicRoomsItem {
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    fn alias(&self) -> Option<&RoomAliasId> {
+        self.alias.as_deref()
+    }
+
+    fn room_id(&self) -> &RoomId {
+        &self.room_info.room_id
+    }
+
+    fn has_tag(&self, _tag: TagName) -> bool {
+        false
+    }
+
+    fn recent_ts(&self) -> Option<&MessageTimeStamp> {
+        None
+    }
+
+    fn is_unread(&self) -> bool {
+        false
+    }
+}
+
+impl ToString for PublicRoomsItem {
+    fn to_string(&self) -> String {
+        return self.name.clone();
+    }
+}
+
+impl ListItem<IambInfo> for PublicRoomsItem {
+    fn show(&self, selected: bool, _: &ViewportContext<ListCursor>, _: &mut ProgramStore) -> Text {
+        let unread = false;
+        let style = selected_style(selected);
+        let (name, labels) = name_and_labels(&self.name, unread, style);
+        let mut spans = vec![name];
+
+        append_tags(labels, &mut spans, style);
+
+        Text::from(Line::from(spans))
+    }
+
+    fn get_word(&self) -> Option<String> {
+        self.room_id().to_string().into()
+    }
+}
+
+impl Promptable<ProgramContext, ProgramStore, IambInfo> for PublicRoomsItem {
     fn prompt(
         &mut self,
         act: &PromptAction,

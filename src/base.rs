@@ -679,6 +679,10 @@ pub enum IambError {
     /// A failure while trying to show an image preview.
     #[error("Preview error: {0}")]
     Preview(String),
+
+    /// An invalide home server name was specified.
+    #[error("Could not parse server name: {0}")]
+    InvalidServerName(String),
 }
 
 impl From<IambError> for UIError<IambInfo> {

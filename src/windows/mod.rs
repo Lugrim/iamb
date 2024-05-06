@@ -971,10 +971,17 @@ impl PublicRoomsItem {
         // let unread = info.unreads(&store.application.settings);
         //
         if let Some(alias) = &alias {
-            store.application.names.insert(alias.to_string(), room_info.room_id.clone());
+            store
+                .application
+                .names
+                .insert(alias.to_string(), room_info.room_id.clone());
         }
 
-        Self { room_info: std::sync::Arc::new(room_info), name, alias }
+        Self {
+            room_info: std::sync::Arc::new(room_info),
+            name,
+            alias,
+        }
     }
 }
 
@@ -1012,12 +1019,20 @@ impl ToString for PublicRoomsItem {
 
 impl ListItem<IambInfo> for PublicRoomsItem {
     fn show(&self, selected: bool, _: &ViewportContext<ListCursor>, _: &mut ProgramStore) -> Text {
-        let unread = false;
         let style = selected_style(selected);
-        let (name, labels) = name_and_labels(&self.name, unread, style);
-        let mut spans = vec![name];
 
-        append_tags(labels, &mut spans, style);
+        let spans: Vec<Span> = vec![
+            self.name.clone(),
+            format!(" ({} members)", self.room_info.num_joined_members),
+            self.room_info
+                .topic
+                .as_ref()
+                .map(|s| format!(" - {}", s))
+                .unwrap_or_default(),
+        ]
+        .into_iter()
+        .map(|t| Span::styled(t, style))
+        .collect();
 
         Text::from(Line::from(spans))
     }

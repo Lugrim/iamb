@@ -320,7 +320,7 @@ fn iamb_public_rooms(desc: CommandDescription, ctx: &mut ProgContext) -> ProgRes
     }
 
     let open = ctx.switch(OpenTarget::Application(IambId::PublicRoomsList));
-    let step = CommandStep::Continue(open, ctx.context.clone());
+    let step = CommandStep::Continue(open.into(), ctx.context.clone());
 
     return Ok(step);
 }

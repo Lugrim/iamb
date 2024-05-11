@@ -13,7 +13,6 @@ use std::time::{Duration, Instant};
 
 use futures::{stream::FuturesUnordered, StreamExt};
 use gethostname::gethostname;
-use matrix_sdk::ruma::directory::PublicRoomsChunk;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
@@ -495,10 +494,6 @@ async fn refresh_public_rooms(
     server_name_string: Option<String>,
     store: &AsyncProgramStore,
 ) {
-    let mut names = vec![];
-
-    let mut rooms = vec![];
-
     let server_name = &server_name_string.clone().map(Box::<ServerName>::try_from).transpose();
 
     let server_name = server_name
@@ -510,45 +505,73 @@ async fn refresh_public_rooms(
         })
         .expect("Server name where?");
 
-    // TODO Check there isn't some kind of zip that could be used here?
-    // TODO Actual Pagination
-    // TODO Allow checking other servers
-    // TODO Error Management
-    match client
-        .public_rooms(Some(100), None, server_name.as_ref().map(Box::as_ref))
-        .await
-    {
-        Ok(resp) => {
-            for room in resp.chunk.into_iter() {
-                let name = room.name.clone().unwrap_or_default();
-
-                names.push((room.room_id.to_owned(), name));
-
-                rooms.push(room);
-            }
-        },
-        Err(_) => {
-            tracing::error!("Could not fetch public rooms");
-        },
-    }
-
-    tracing::debug!("Waiting for lock on application store to refresh public rooms...");
-
     let mut locked = store.lock().await;
-    locked.application.sync_info.public_rooms = rooms.clone();
+    locked.application.sync_info.public_rooms = vec![];
+    drop(locked);
 
-    for (room_id, name) in names {
-        locked.application.set_room_name(&room_id, &name);
+    let mut next: Option<String> = None;
+
+    // Insert new page into
+    // TODO split loop into several tasks
+    loop {
+        let mut names = vec![];
+
+        let mut rooms = vec![];
+
+        // TODO Allow checking other servers
+        // TODO Error Management
+        match client
+            .public_rooms(
+                Some(25),
+                next.as_ref().map(std::string::String::as_str),
+                server_name.as_ref().map(Box::as_ref),
+            )
+            .await
+        {
+            Ok(resp) => {
+                next = resp.next_batch;
+
+                for room in resp.chunk.into_iter() {
+                    let name = room.name.clone().unwrap_or_else(|| {
+                        room.canonical_alias
+                            .clone()
+                            .map(|a| a.to_string())
+                            .unwrap_or_else(|| room.room_id.to_string())
+                    });
+
+                    names.push((room.room_id.to_owned(), name));
+
+                    rooms.push(room);
+                }
+            },
+            Err(e) => {
+                tracing::error!("Could not fetch public rooms: {e}");
+                tracing::debug!("Public rooms list refresh \"next\" token used: {}",
+                                next.unwrap_or("(no next)".to_string()));
+                break;
+            },
+        }
+
+        let mut locked = store.lock().await;
+        locked.application.sync_info.public_rooms.append(&mut rooms);
+
+        for (room_id, name) in names {
+            locked.application.set_room_name(&room_id, &name);
+        }
+        drop(locked);
+
+        if next.is_none() {
+            break;
+        }
+        tracing::info!("Next batch...");
     }
 
-    tracing::debug!("Dropping Lock");
-
-    drop(locked);
+    tracing::info!("Finished refreshing rooms!");
 }
 
 // PERF: This probably should run lazily
 async fn refresh_public_rooms_forever(client: &Client, store: &AsyncProgramStore) {
-    let mut interval = tokio::time::interval(Duration::from_secs(30));
+    let mut interval = tokio::time::interval(Duration::from_secs(300));
 
     loop {
         refresh_public_rooms(client, None, store).await;

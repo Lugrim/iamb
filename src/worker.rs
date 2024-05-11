@@ -493,7 +493,7 @@ async fn refresh_public_rooms(
     client: &Client,
     server_name_string: Option<String>,
     store: &AsyncProgramStore,
-) {
+) -> Result<(), IambError> {
     let server_name = &server_name_string.clone().map(Box::<ServerName>::try_from).transpose();
 
     let server_name = server_name
@@ -502,8 +502,7 @@ async fn refresh_public_rooms(
             IambError::InvalidServerName(
                 server_name_string.expect("There should've been a server name"),
             )
-        })
-        .expect("Server name where?");
+        })?;
 
     let mut locked = store.lock().await;
     locked.application.sync_info.public_rooms = vec![];
@@ -512,14 +511,12 @@ async fn refresh_public_rooms(
     let mut next: Option<String> = None;
 
     // Insert new page into
-    // TODO split loop into several tasks
     loop {
         let mut names = vec![];
 
         let mut rooms = vec![];
 
         // TODO Allow checking other servers
-        // TODO Error Management
         match client
             .public_rooms(
                 Some(25),
@@ -545,10 +542,7 @@ async fn refresh_public_rooms(
                 }
             },
             Err(e) => {
-                tracing::error!("Could not fetch public rooms: {e}");
-                tracing::debug!("Public rooms list refresh \"next\" token used: {}",
-                                next.unwrap_or("(no next)".to_string()));
-                break;
+                break Err(IambError::Http(e));
             },
         }
 
@@ -561,12 +555,9 @@ async fn refresh_public_rooms(
         drop(locked);
 
         if next.is_none() {
-            break;
+            break Ok(());
         }
-        tracing::info!("Next batch...");
     }
-
-    tracing::info!("Finished refreshing rooms!");
 }
 
 // PERF: This probably should run lazily
@@ -574,7 +565,10 @@ async fn refresh_public_rooms_forever(client: &Client, store: &AsyncProgramStore
     let mut interval = tokio::time::interval(Duration::from_secs(300));
 
     loop {
-        refresh_public_rooms(client, None, store).await;
+        match refresh_public_rooms(client, None, store).await {
+            Err(e) => tracing::error!("Could not refresh public rooms: {e}"),
+            _ => (),
+        };
         interval.tick().await;
     }
 }
